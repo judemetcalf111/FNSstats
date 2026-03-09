@@ -2,16 +2,14 @@ using Distributed
 using ClusterManagers # Optional: Use if submitting via SLURM/PBS
 using Pkg
 
-# --- 1. HPC Setup ---
-# If running locally, add local cores. 
-# If on SLURM, use addprocs_slurm(parse(Int, ENV["SLURM_NTASKS"]))
+# Add workers
 if length(workers()) == 1
     addprocs(Sys.CPU_THREADS - 1) 
 end
 
 @everywhere using CSV, DataFrames, Statistics, FFTW, StatsBase
 
-# --- 2. Define Kernels (Available to all workers) ---
+# --- Define kernels (Available to all workers) ---
 @everywhere begin
     # Optimized MAD function
     function calc_metrics_single_file(filepath, max_lags)
@@ -22,7 +20,7 @@ end
         
         N = length(x)
         
-        # --- A. MAD Calculation ---
+        # --- MAD Calculation ---
         # User definition: (Mean(|dx|) + Mean(|dy|))^2
         # We calculate the sum here, squaring is non-linear so we do it per file
         mad_curve = zeros(Float64, max_lags)
@@ -42,26 +40,29 @@ end
             mad_curve[tau] = (mean_abs_dx + mean_abs_dy)^2
         end
 
-        # --- B. ACF Calculation ---
+        # --- ACF Calculation ---
         # Calculate lags up to max_lags
         acf_x = autocor(x, 1:max_lags)
         acf_y = autocor(y, 1:max_lags)
         
-        # --- C. FFT Calculation ---
-        # Compute Power Spectral Density (PSD)
-        # Using a simplistic definition: |FFT|^2
-        fft_x = abs.(rfft(x)).^2
-        fft_y = abs.(rfft(y)).^2
+        # --- FFT Calculation ---
+        # Using steps
+        Δx = [0;diff(x)]
+        Δy = [0;diff(y)]
+
+        Δs = sqrt.(Δx.^2 + Δy.^2)
+
+        PSD = abs.(rfft(Δs)).^2
         
         # Return a tuple of vectors
-        return (mad_curve, acf_x, acf_y, fft_x, fft_y)
+        return (mad_curve, acf_x, acf_y, PSD)
     end
 end
 
 # --- 3. Main Execution Block ---
 function main()
-    input_dir  = "/Users/chardiol/Desktop/Theory of Brain/Julian_Plotting/data" # Update for HPC path
-    output_dir = "/Users/chardiol/Desktop/Theory of Brain/Julian_Plotting/Results"
+    input_dir  = "/suphys/jmet9477/export/FulldFNS/data/Long/" # Update for HPC path
+    output_dir = "/suphys/jmet9477/export/FulldFNS/data/Longanal/"
     isdir(output_dir) || mkdir(output_dir)
     
     files = filter(f -> endswith(f, ".csv"), readdir(input_dir; join=true))
@@ -75,7 +76,7 @@ function main()
     # --- PARALLEL REDUCTION ---
     # @distributed (+) means: execute the loop in chunks on workers, 
     # and sum (+) the results of the tuple element-wise.
-    (sum_mad, sum_acf_x, sum_acf_y, sum_fft_x, sum_fft_y) = @distributed (+) for f in files
+    (sum_mad, sum_acf_x, sum_acf_y, PSD_sum) = @distributed (+) for f in files
         calc_metrics_single_file(f, MAX_LAGS)
     end
     
@@ -84,8 +85,7 @@ function main()
     avg_mad   = sum_mad ./ n_files
     avg_acf_x = sum_acf_x ./ n_files
     avg_acf_y = sum_acf_y ./ n_files
-    avg_fft_x = sum_fft_x ./ n_files
-    avg_fft_y = sum_fft_y ./ n_files
+    avg_PSD = PSD_sum ./ n_files
 
     println("Processing complete. Saving aggregate data...")
 
@@ -100,9 +100,8 @@ function main()
     
     # Saving FFT separately
     df_fft = DataFrame(
-        FreqIndex = 1:length(avg_fft_x),
-        PSD_X = avg_fft_x,
-        PSD_Y = avg_fft_y
+        FreqIndex = 1:length(avg_PSD),
+        PSD = avg_PSD,
     )
     
     CSV.write(joinpath(output_dir, "Ensemble_TimeDomain.csv"), df_results)
