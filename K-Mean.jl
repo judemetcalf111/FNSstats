@@ -27,100 +27,123 @@ isdir(output_dir) || mkdir(output_dir)
 # Get all .csv files in the input directory
 csv_files = filter(f -> endswith(f, ".csv"), readdir(input_dir; join=true))
 
+# 1. Pool a subset of data from all files to find the 9 global centers
+println("Phase 1: Finding 9 global centers...")
+all_x = Float64[]
+all_y = Float64[]
+
+for file in csv_files
+    df = CSV.read(file, DataFrame)
+    # Take every 10th point to save memory, plenty for finding stable centers
+    append!(all_x, df.value1[1:10:end]) 
+    append!(all_y, df.value2[1:10:end])
+end
+
+global_data = hcat(all_x, all_y)'
+R_global = kmeans(global_data, 9) # k=9 for the 9-dot grid
+global_centers = R_global.centers
+println("Global centers established!")
+
 FigNumber = 1
+# Function to assign every x,y coordinate to the nearest global center
+function assign_to_centers(x, y, centers)
+    n = length(x)
+    k_clusters = size(centers, 2)
+    assignments = zeros(Int, n)
+    
+    for i in 1:n
+        min_dist = Inf
+        best_c = 1
+        for c in 1:k_clusters
+            # Calculate squared distance to each center
+            dist = (x[i] - centers[1, c])^2 + (y[i] - centers[2, c])^2
+            if dist < min_dist
+                min_dist = dist
+                best_c = c
+            end
+        end
+        assignments[i] = best_c
+    end
+    return assignments
+end
 
-function detect_transitions_geometric(x, y; n_clusters=3, min_dwell=10000)
-    # 1. Combine data
-    data = hcat(x, y)' # Clustering expects (n_features, n_samples)
+# Fixed Hysteresis logic
+function extract_stable_fixations(assignments; min_dwell=200)
+    # This will hold NamedTuples: (start_idx, stop_idx, cluster_id)
+    fixations = [] 
     
-    # 2. Find the 3 centers (attractors) automatically
-    # This assumes the particle spends most time in the wells, not the transition paths
-    R = kmeans(data, n_clusters)
-    assignments = R.assignments # distinct integers (1, 2, 3) for each timepoint
-    
-    # 3. Detect switches
-    # A switch happens when assignment[i] != assignment[i-1]
-    # However, at the boundary, noise might cause 1-2-1-2 flickering.
-    # We apply a "Minimum Dwell Time" (Hysteresis)
-    
-    transitions = Int[]
     current_state = assignments[1]
-    last_switch_time = 1
+    streak_start = 1
     
-    current_length = 0
-
     for i in 2:lastindex(assignments)
         if assignments[i] != current_state
-            # Potential switch. 
-            # Check if we have stayed in the NEW state long enough to call it real?
-            # Or (simpler for retrospective): Did we stay in the OLD state long enough?
+            streak_length = i - streak_start
             
-            duration_in_previous = i - last_switch_time
-
-            if assignments[i] == assignments[i-1]
-                current_length += 1
-            else
-                current_length = 0
+            # If the streak lasted long enough, log it as a confirmed fixation!
+            if streak_length >= min_dwell
+                push!(fixations, (start=streak_start, stop=i-1, state=current_state))
             end
             
-            if duration_in_previous > min_dwell && current_length >= 30
-                push!(transitions, i) # This index is where the transition started
-                current_state = assignments[i]
-                last_switch_time = i
-                current_length = 0
-            else
-                # If the duration was too short, it was just boundary noise.
-                # We essentially ignore the flicker.
-            end
+            # Reset the streak tracker for the new cluster
+            current_state = assignments[i]
+            streak_start = i
         end
     end
     
-    return transitions, R.centers
+    # Catch the final fixation at the very end of the array
+    if (length(assignments) - streak_start + 1) >= min_dwell
+        push!(fixations, (start=streak_start, stop=length(assignments), state=current_state))
+    end
+    
+    return fixations
 end
 
-isi_vec = []
+isi_vec = Float64[]
+FigNumber = 1
 
-# loop through csv files in /datadir
+println("Phase 2: Processing individual files...")
 for file in csv_files
     df = CSV.read(file, DataFrame)
     x = df.value1
     y = df.value2
-    dt = 0.001
+    
+    assignments = assign_to_centers(x, y, global_centers)
+    
+    # 1. Extract only the solid fixations
+    # Note: Assuming 1000Hz (dt=0.001), 1000ms is a very long time for a human 
+    # visual fixation. 150ms - 300ms is standard. I've lowered it to 200 here.
+    fixations = extract_stable_fixations(assignments; min_dwell=1000)
 
-    (sac_starts, centres) = detect_transitions_geometric(x,y; n_clusters=3, min_dwell=1000)
-
-    isi = diff(sac_starts)
-
-    append!(isi_vec,isi)
-
-    if length(isi) > 5 # Only plot if we have decent statistics
-        # lags = 0:length(isi)-1
-        # acf_values = autocor(isi, lags)
+    if length(fixations) > 1
+        # 2. Extract Saccade Starts (the frame after a fixation ends)
+        sac_starts = [f.stop + 1 for f in fixations[1:end-1]]
         
-        # p2 = plot(lags, acf_values, xlims=(0,40), ylims=(-0.1,0.2), xlabel="Lag", ylabel="Autocorrelation", title="Autocorrelation of ISIs")
-        # outname2 = joinpath(output_dir, splitext(basename(file))[1] * "-ISI_ACF.pdf")
+        # 3. Calculate ISI (Time between the start of consecutive fixations)
+        fixation_starts = [f.start for f in fixations]
+        isi = diff(fixation_starts)
         
-        # shuffled_acf = autocor(shuffle(isi), lags)
-        # plot!(lags, shuffled_acf, label="Shuffled ISIs", color=:red, linestyle=:dash)
-        # savefig(p2, outname2)
+        append!(isi_vec, isi)
         
+        # --- Plotting ---
         p4 = plot(x, label="X Position", color=:blue, alpha=0.6)
         plot!(y, label="Y Position", color=:green, alpha=0.6)
         
-        # Add scatter points on X trace to mark starts
+        # Mark the exact moment the eye leaves the dot to begin searching
         plot!(sac_starts, x[sac_starts], seriestype=:scatter, 
-        markersize=3, color=:red, label="Detected Saccades")
+              markersize=4, color=:red, label="Saccade Departure")
+              
+        # Optional: Mark when the eye finally settles on the new dot
+        settle_starts = [f.start for f in fixations[2:end]]
+        plot!(settle_starts, x[settle_starts], seriestype=:scatter, 
+              markersize=4, color=:black, shape=:star5, label="Target Settled")
         
         plot!(xlims=(10000, 300000), title="Saccade Detection Trace")
         
         outname4 = joinpath(output_dir, splitext(basename(file))[1] * "-SACCADES.pdf")
         savefig(p4, outname4)
-        
     end
-    
-    println("Processed $FigNumber: $(basename(file))")
-    global FigNumber += 1
 end
+
 
 # timelength over which we plot:
 timelength = 120000.
