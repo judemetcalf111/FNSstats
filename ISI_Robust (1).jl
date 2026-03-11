@@ -27,13 +27,20 @@ csv_files = filter(f -> endswith(f, ".csv"), readdir(input_dir; join=true))
 
 FigNumber = 1
 
-function calculate_isi(x, y; timeout_smoother=0.007, timeout=0.150, λ=8.0, dt=0.001, min_dur_steps=5)
+function calculate_isi(x, y; timeout_smoother=.001, timeout=0.001, λ=20., dt=0.001, min_dur_steps=3)
     timeout_steps = Int(ceil(timeout/dt))
     timeout_smoother_steps = Int(ceil(timeout_smoother/dt))
     
-    # 2. FIXED: Explicit kernel construction for clarity
-    # A sigma of 7ms is enough to kill white noise but keeps the velocity peak
+    # smooth the velocities with just a uniform averaging of position
+    # (physically motivated by an averaging across time? Muscles don't contract instantly, neural lag...)
+    # Since we are looking for macro-saccades here, this is basically a low-pass filter, 
+    # strength determined by timeout parameter, which is the window of time averaged over, over which microsaccades fade away
+    # function rolling_mean(vec, n)
+    #     return [mean(@view vec[max(1, i-n+1):i]) for i in 1:length(vec)]
+    # end
+
     function gaussian_smooth(vec, σ)
+        # Maths of the convolution is handled by ImageFiltering.jl, we just need to specify the kernel and sd
         return imfilter(vec, Kernel.gaussian((σ,)))
     end
 
@@ -44,36 +51,43 @@ function calculate_isi(x, y; timeout_smoother=0.007, timeout=0.150, λ=8.0, dt=0
     vy = [0.0; diff(y_sm)] ./ dt
     v = sqrt.(vx.^2 .+ vy.^2)
 
-    # Threshold: λ=6 is standard for Engbert-Kliegl. 
-    # If your data is very clean, you can lower this to 4 or 5.
+    # threshold
     msd = median(abs.(v .- median(v))) / 0.6745
     threshold = λ * msd
     is_saccade = v .> threshold
 
+    # Duration of saccade and making sure we don't double count the same saccade
     starts_timed = Int[]
-    last_start = -timeout_steps 
+    last_start = - timeout_steps # Initialize to allow the first detection
     
-    i = 1
+    i::Int = 1
     while i < length(is_saccade)
         if is_saccade[i]
+            # Find how long this specific "high velocity" event lasts
             j = i
             while j <= length(is_saccade) && is_saccade[j]
                 j += 1
             end
             event_duration = j - i
             
-            # Check duration and Refractory period
+            # Long enough && Enough time since last one
+            # Warning: FNS gives saccades very quickly, on the order of 1 timeout_steps
+            # so set min_dur_steps to between 1 and 4, above that and saccades vanish
             if event_duration >= min_dur_steps && (i - last_start) > timeout_steps
                 push!(starts_timed, i)
                 last_start = i
             end
+            
+            # Skip to the end of this velocity peak
             i = j
         else
             i += 1
         end
     end
 
+    # ISI in ms
     isi = diff(starts_timed) .* (dt * 1000) 
+
     return (starts_timed, isi) 
 end
 
@@ -84,20 +98,11 @@ for file in csv_files
     y = df.value2
     dt = 0.001
 
-    # 3. CRITICAL PARAMETER FIX:
-    # timeout_smoother: 0.005 (5ms) instead of 0.2 (200ms)
-    # timeout: 0.2 (200ms refractory) instead of 10 (10 seconds)
-    (sac_starts, isi) = calculate_isi(x, y; 
-        timeout_smoother=1., 
-        timeout=5, 
-        λ=6.0, 
-        dt=dt, 
-        min_dur_steps=30
-    )
+    (sac_starts, isi) = calculate_isi(x, y; timeout_smoother=0.02, timeout=0.006, λ=2., dt=dt, min_dur_steps=4)
 
-    if length(isi) > 5 # Only plot if we have decent statistics
+    if length(isi) > 1
         # timelength over which we plot:
-        timelength = 25000.
+        timelength = 2500.
         # Precomputing the log normal fit
         lISI = log.(isi)
         log_σ = std(lISI)
@@ -132,15 +137,8 @@ for file in csv_files
         outname3 = joinpath(output_dir, splitext(basename(file))[1] * "-ISI_TIMESERIES.pdf")
         savefig(p3, outname3)
 
-        p4 = plot(x, label="X Position", color=:blue, alpha=0.6)
-        plot!(y, label="Y Position", color=:green, alpha=0.6)
-        
-        # Add scatter points on X trace to mark starts
-        plot!(sac_starts, x[sac_starts], seriestype=:scatter, 
-              markersize=3, color=:red, label="Detected Saccades")
-        
-        plot!(xlims=(10000, 300000), title="Saccade Detection Trace")
-        
+        p4 = plot((x+y)./2)
+        plot!(sac_starts, (x+y)[sac_starts]./2, seriestype=:scatter, linewidth=1, xlims=(10000, 30000), ylims=(-10, 10), label="Saccade Starts", color=:red)
         outname4 = joinpath(output_dir, splitext(basename(file))[1] * "-SACCADES.pdf")
         savefig(p4, outname4)
     end

@@ -10,6 +10,8 @@ using GLM
 using Statistics
 using Plots
 using ImageFiltering
+using Clustering
+using Distances
 # using Base.Threads
 # using Foresight
 using Distributions
@@ -27,54 +29,44 @@ csv_files = filter(f -> endswith(f, ".csv"), readdir(input_dir; join=true))
 
 FigNumber = 1
 
-function calculate_isi(x, y; timeout_smoother=0.007, timeout=0.150, λ=8.0, dt=0.001, min_dur_steps=5)
-    timeout_steps = Int(ceil(timeout/dt))
-    timeout_smoother_steps = Int(ceil(timeout_smoother/dt))
+function detect_transitions_geometric(x, y; n_clusters=3, min_dwell=50000)
+    # 1. Combine data
+    data = hcat(x, y)' # Clustering expects (n_features, n_samples)
     
-    # 2. FIXED: Explicit kernel construction for clarity
-    # A sigma of 7ms is enough to kill white noise but keeps the velocity peak
-    function gaussian_smooth(vec, σ)
-        return imfilter(vec, Kernel.gaussian((σ,)))
-    end
-
-    x_sm = gaussian_smooth(x, timeout_smoother_steps) 
-    y_sm = gaussian_smooth(y, timeout_smoother_steps)
+    # 2. Find the 3 centers (attractors) automatically
+    # This assumes the particle spends most time in the wells, not the transition paths
+    R = kmeans(data, n_clusters)
+    assignments = R.assignments # distinct integers (1, 2, 3) for each timepoint
     
-    vx = [0.0; diff(x_sm)] ./ dt
-    vy = [0.0; diff(y_sm)] ./ dt
-    v = sqrt.(vx.^2 .+ vy.^2)
-
-    # Threshold: λ=6 is standard for Engbert-Kliegl. 
-    # If your data is very clean, you can lower this to 4 or 5.
-    msd = median(abs.(v .- median(v))) / 0.6745
-    threshold = λ * msd
-    is_saccade = v .> threshold
-
-    starts_timed = Int[]
-    last_start = -timeout_steps 
+    # 3. Detect switches
+    # A switch happens when assignment[i] != assignment[i-1]
+    # However, at the boundary, noise might cause 1-2-1-2 flickering.
+    # We apply a "Minimum Dwell Time" (Hysteresis)
     
-    i = 1
-    while i < length(is_saccade)
-        if is_saccade[i]
-            j = i
-            while j <= length(is_saccade) && is_saccade[j]
-                j += 1
-            end
-            event_duration = j - i
+    transitions = Int[]
+    current_state = assignments[1]
+    last_switch_time = 1
+
+    for i in 2:lastindex(assignments)
+        if assignments[i] != current_state
+            # Potential switch. 
+            # Check if we have stayed in the NEW state long enough to call it real?
+            # Or (simpler for retrospective): Did we stay in the OLD state long enough?
             
-            # Check duration and Refractory period
-            if event_duration >= min_dur_steps && (i - last_start) > timeout_steps
-                push!(starts_timed, i)
-                last_start = i
+            duration_in_previous = i - last_switch_time
+            
+            if duration_in_previous > min_dwell
+                push!(transitions, i) # This index is where the transition started
+                current_state = assignments[i]
+                last_switch_time = i
+            else
+                # If the duration was too short, it was just boundary noise.
+                # We essentially ignore the flicker.
             end
-            i = j
-        else
-            i += 1
         end
     end
-
-    isi = diff(starts_timed) .* (dt * 1000) 
-    return (starts_timed, isi) 
+    
+    return transitions, R.centers
 end
 
 # loop through csv files in /datadir
@@ -87,13 +79,17 @@ for file in csv_files
     # 3. CRITICAL PARAMETER FIX:
     # timeout_smoother: 0.005 (5ms) instead of 0.2 (200ms)
     # timeout: 0.2 (200ms refractory) instead of 10 (10 seconds)
-    (sac_starts, isi) = calculate_isi(x, y; 
-        timeout_smoother=1., 
-        timeout=5, 
-        λ=6.0, 
-        dt=dt, 
-        min_dur_steps=30
-    )
+    # (sac_starts, isi) = calculate_isi(x, y; 
+    #     timeout_smoother=0.1, 
+    #     timeout=0.2, 
+    #     λ=10.0, 
+    #     dt=dt, 
+    #     min_dur_steps=100
+    # )
+
+    (sac_starts, centres) = detect_transitions_geometric(x,y)
+
+    isi = diff(sac_starts)
 
     if length(isi) > 5 # Only plot if we have decent statistics
         # timelength over which we plot:

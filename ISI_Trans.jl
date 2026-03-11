@@ -106,7 +106,7 @@ for file in csv_files
     y = df.value2
     dt = 0.001
 
-    (sac_starts, isi) = calculate_isi(x, y; timeout=0.01, λ=3., dt=dt, min_dur_steps=6)
+    (sac_starts, isi) = calculate_isi(x, y; timeout=5, λ=6., dt=dt, min_dur_steps=100)
 
     if length(isi) > 1
         # timelength over which we plot:
@@ -146,7 +146,7 @@ for file in csv_files
         savefig(p3, outname3)
 
         p4 = plot((x+y)./2)
-        plot!(sac_starts, (x+y)[sac_starts]./2, seriestype=:scatter, linewidth=1, xlims=(10000, 30000), ylims=(-10, 10), label="Saccade Starts", color=:red)
+        plot!(sac_starts, (x+y)[sac_starts]./2, seriestype=:scatter, linewidth=1, xlims=(10000, 600000), ylims=(-10, 10), label="Saccade Starts", color=:red)
         outname4 = joinpath(output_dir, splitext(basename(file))[1] * "-SACCADES.pdf")
         savefig(p4, outname4)
     end

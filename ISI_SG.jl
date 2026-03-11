@@ -3,6 +3,7 @@ Pkg.activate(".")
 
 # using DSP
 using Random
+using SavitzkyGolay
 using StatsBase
 using CSV
 using DataFrames
@@ -27,22 +28,40 @@ csv_files = filter(f -> endswith(f, ".csv"), readdir(input_dir; join=true))
 
 FigNumber = 1
 
-function calculate_isi(x, y; timeout_smoother=0.007, timeout=0.150, λ=8.0, dt=0.001, min_dur_steps=5)
+function get_sg_velocity(x, y, dt)
+    # 1. Parameters
+    # window_size: Must be ODD. 
+    # For saccades (20-50ms), a window of 21 (21ms) to 41 (41ms) is standard.
+    # If window is too small -> too much noise. If too large -> misses start of saccade.
+    window_size = 1001
+    
+    # order: The polynomial order. 
+    # 2 (quadratic) or 3 (cubic) is standard. 
+    # 3 is better at keeping sharp peaks, 2 is smoother.
+    poly_order = 2
+    
+    # 2. Apply Filter
+    # deriv=1 calculates velocity directly.
+    # rate=1/dt automatically scales the output to units/second.
+    # The function returns a struct, the data is in the .y field
+    sg_x = savitzky_golay(x, window_size, poly_order, deriv=1, rate=1/dt)
+    sg_y = savitzky_golay(y, window_size, poly_order, deriv=1, rate=1/dt)
+    
+    # 3. Combine into velocity magnitude
+    # We access the .y field to get the vector data
+    vx = sg_x.y
+    vy = sg_y.y
+    
+    v = sqrt.(vx.^2 .+ vy.^2)
+    return v
+end
+
+function calculate_isi(x, y; timeout_smoother=0.007, timeout=0.150, λ=6.0, dt=0.001, min_dur_steps=5)
     timeout_steps = Int(ceil(timeout/dt))
     timeout_smoother_steps = Int(ceil(timeout_smoother/dt))
     
-    # 2. FIXED: Explicit kernel construction for clarity
-    # A sigma of 7ms is enough to kill white noise but keeps the velocity peak
-    function gaussian_smooth(vec, σ)
-        return imfilter(vec, Kernel.gaussian((σ,)))
-    end
 
-    x_sm = gaussian_smooth(x, timeout_smoother_steps) 
-    y_sm = gaussian_smooth(y, timeout_smoother_steps)
-    
-    vx = [0.0; diff(x_sm)] ./ dt
-    vy = [0.0; diff(y_sm)] ./ dt
-    v = sqrt.(vx.^2 .+ vy.^2)
+    v = get_sg_velocity(x, y, 0.001)
 
     # Threshold: λ=6 is standard for Engbert-Kliegl. 
     # If your data is very clean, you can lower this to 4 or 5.
@@ -88,11 +107,11 @@ for file in csv_files
     # timeout_smoother: 0.005 (5ms) instead of 0.2 (200ms)
     # timeout: 0.2 (200ms refractory) instead of 10 (10 seconds)
     (sac_starts, isi) = calculate_isi(x, y; 
-        timeout_smoother=1., 
-        timeout=5, 
-        λ=6.0, 
+        timeout_smoother=0.1, 
+        timeout=0.2, 
+        λ=12.0, 
         dt=dt, 
-        min_dur_steps=30
+        min_dur_steps=100
     )
 
     if length(isi) > 5 # Only plot if we have decent statistics
@@ -139,7 +158,7 @@ for file in csv_files
         plot!(sac_starts, x[sac_starts], seriestype=:scatter, 
               markersize=3, color=:red, label="Detected Saccades")
         
-        plot!(xlims=(10000, 300000), title="Saccade Detection Trace")
+        plot!(xlims=(10000, 600000), ylims=(-10,10), title="Saccade Detection Trace")
         
         outname4 = joinpath(output_dir, splitext(basename(file))[1] * "-SACCADES.pdf")
         savefig(p4, outname4)

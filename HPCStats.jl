@@ -61,8 +61,13 @@ end
 
 # --- 3. Main Execution Block ---
 function main()
+<<<<<<< Updated upstream
     input_dir  = "/suphys/jmet9477/export/FulldFNS/data/Long/" # Update for HPC path
     output_dir = "/suphys/jmet9477/export/FulldFNS/data/Longanal/"
+=======
+    input_dir  = "/suphys/jmet9477/export/FulldFNS/data/Long" # Update for HPC path
+    output_dir = "/suphys/jmet9477/export/FulldFNS/data/Long_anal"
+>>>>>>> Stashed changes
     isdir(output_dir) || mkdir(output_dir)
     
     files = filter(f -> endswith(f, ".csv"), readdir(input_dir; join=true))
