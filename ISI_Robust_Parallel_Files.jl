@@ -2,18 +2,16 @@ using Pkg
 Pkg.activate(".")
 
 # using DSP
+using SavitzkyGolay
 using Random
 using StatsBase
 using CSV
 using DataFrames
-using GLM 
+using GLM
 using Statistics
 using Plots
 using ImageFiltering
-# using Base.Threads
-# using Foresight
 using Distributions
-# Foresight.set_theme!(foresight(:physics))
 
 # Set input and output folders
 input_dir  = "/Users/chardiol/Desktop/Theory of Brain/Julian_Plotting/data"
@@ -31,58 +29,63 @@ function gaussian_smooth(vec, σ)
     return imfilter(vec, Kernel.gaussian((σ,)))
 end
 
+function get_sg_velocity(x, y, window_size, dt)
+
+    # Ensure odd:
+    if window_size % 2 == 0
+        window_size -= 1
+    end    
+    poly_order = 3
+    sg_x = savitzky_golay(x, window_size, poly_order, deriv=1, rate=1/dt)
+    sg_y = savitzky_golay(y, window_size, poly_order, deriv=1, rate=1/dt)
+    
+    # Combine to get velocity magnitude
+    # We access the .y field to get the vector data
+    vx = sg_x.y
+    vy = sg_y.y
+    
+    v = sqrt.(vx.^2 .+ vy.^2)
+    return v
+end
+
 function find_med(x,y,timeout_smoother,dt)
     timeout_smoother_steps = Int(ceil(timeout_smoother/dt))
     
-    # 2. FIXED: Explicit kernel construction for clarity
-    # A sigma of 7ms is enough to kill white noise but keeps the velocity peak
+    v = get_sg_velocity(x, y, timeout_smoother_steps, dt)
 
-    x_sm = gaussian_smooth(x, timeout_smoother_steps) 
-    y_sm = gaussian_smooth(y, timeout_smoother_steps)
-    
-    vx = [0.0; diff(x_sm)] ./ dt
-    vy = [0.0; diff(y_sm)] ./ dt
-    v = sqrt.(vx.^2 .+ vy.^2)
-
-    # Threshold: λ=6 is standard for Engbert-Kliegl. 
-    # If your data is very clean, you can lower this to 4 or 5.
+    # Threshold: λ=6 seems to be common for Engbert-Kliegl. 
     msd = median(abs.(v .- median(v))) / 0.6745
     return msd 
 end
 
-function calculate_isi(x, y, μ; timeout_smoother=0.007, timeout=0.150, λ=8.0, dt=0.001, min_dur_steps=5)
+function calculate_isi(x, y, msd; timeout_smoother=0.007, timeout=0.150, λ=6.0, ratio=0.1, dt=0.001, min_dur_steps=5)
     timeout_steps = Int(ceil(timeout/dt))
     timeout_smoother_steps = Int(ceil(timeout_smoother/dt))
     
-    # 2. FIXED: Explicit kernel construction for clarity
-    # A sigma of 7ms is enough to kill white noise but keeps the velocity peak
-    function gaussian_smooth(vec, σ)
-        return imfilter(vec, Kernel.gaussian((σ,)))
-    end
-
-    x_sm = gaussian_smooth(x, timeout_smoother_steps) 
-    y_sm = gaussian_smooth(y, timeout_smoother_steps)
-    
-    vx = [0.0; diff(x_sm)] ./ dt
-    vy = [0.0; diff(y_sm)] ./ dt
-    v = sqrt.(vx.^2 .+ vy.^2)
+    v = get_sg_velocity(x, y, timeout_smoother_steps, 0.001)
 
     # Threshold: λ=6 is standard for Engbert-Kliegl. 
-    # If your data is very clean, you can lower this to 4 or 5.
-    msd = μ
-    threshold = λ * msd
-    is_saccade = v .> threshold
+    threshold_on = λ * msd
+
+    λ_off = ratio * λ
+    threshold_off = λ_off * msd
 
     starts_timed = Int[]
     last_start = -timeout_steps 
     
     i = 1
-    while i < length(is_saccade)
-        if is_saccade[i]
-            j = i
-            while j <= length(is_saccade) && is_saccade[j]
+    n = length(v)
+    
+    while i <= n
+        # Wait for velocity to spike above the high onset threshold
+        if v[i] > threshold_on
+            j = i + 1
+            
+            # Keep moving forward until the particle is "effectively stationary", as defined by threshold_off
+            while j <= n && v[j] >= threshold_off
                 j += 1
             end
+            
             event_duration = j - i
             
             # Check duration and Refractory period
@@ -90,6 +93,8 @@ function calculate_isi(x, y, μ; timeout_smoother=0.007, timeout=0.150, λ=8.0, 
                 push!(starts_timed, i)
                 last_start = i
             end
+            
+            # Advance our search index to the end of the stationary tail
             i = j
         else
             i += 1
@@ -102,9 +107,12 @@ end
 
 isi_vec = []
 
-# loop through csv files in /datadir
-global μ = 0
+### loop through csv files in /datadir
+
+#Set accumulators
+global μ::Float64 = 0
 total_samples = length(csv_files)
+
 for file in csv_files
     df = CSV.read(file, DataFrame)
     x = df.value1
@@ -124,11 +132,21 @@ for file in csv_files
     # timeout: 0.2 (200ms refractory) instead of 10 (10 seconds)
     (sac_starts, isi) = calculate_isi(x, y, μ; 
         timeout_smoother=6, 
-        timeout=6., 
-        λ=1.2, 
+        timeout=0.05,
+        ratio=0.1,
+        λ=7,
         dt=dt, 
-        min_dur_steps=150
+        min_dur_steps=2400
     )
+
+    # (sac_starts, isi) = calculate_isi(x, y, μ; 
+    #     timeout_smoother=5.5, 
+    #     timeout=0.2, 
+    #     ratio=0.1,
+    #     λ=8,
+    #     dt=dt, 
+    #     min_dur_steps=2400
+    # )
 
     append!(isi_vec,isi)
 
@@ -161,33 +179,72 @@ for file in csv_files
     global FigNumber += 1
 end
 
+# Rescaling to match Fries' data:
+isi_vec .*= 0.023
+
+N = length(isi_vec)
+
 # timelength over which we plot:
-timelength = 200000.
+timelength = 60000. * 0.023
 # Precomputing the log normal fit
 lISI = log.(isi_vec)
 log_σ = std(lISI)
+RI = 1 / sqrt(exp(log_σ^2) - 1)
 log_peak = median(lISI)
 plotting_x = range(0,timelength)
 fitted_ln = LogNormal(log_peak,log_σ)
 
-p = histogram(isi_vec,
-bins=range(0, timelength, length=60),
-normalize=:pdf,
-xlabel="Inter-Saccadic Interval (ms)",
-# title="File: $(basename(file))",
-xlims=(0, timelength),
-legend=false)
+default(
+    fontfamily = "Computer Modern",    # Nice font, renders a minus sign
+    titlefontsize = 24,
+    guidefontsize = 18,          
+    tickfontsize = 20,
+    legendfontsize = 16,
+    grid = false,                # Removes visual clutter for smaller plots
+    framestyle = :box,           # Professional enclosed bounding box
+    dpi = 300,                   # High resolution for PDF export
+    margin = 8Plots.mm,          # Fixing the label cropping...
+    legend = :topright
+)
 
-plot!(plotting_x,pdf.(fitted_ln,plotting_x))
+### Histogram with Log-normal fit
+p1 = histogram(isi_vec,
+    bins = range(0, timelength, length=120),
+    normalize = :pdf,
+    xlabel = "Inter-Saccadic Interval (ms)",
+    ylabel = "Probability Density",
+    xlims = (0, timelength),
+    label = "Simulated ISI Data", # Fixed: Changed 'legend' to 'label'
+    color = :steelblue,           # Professional muted blue
+    linecolor = :white,           # White borders separate the bins clearly
+    linewidth = 0.5,
+    fillalpha = 0.7
+)
 
-outname = joinpath(output_dir, "Total_ISIs.pdf")
-savefig(p, outname)
+plot!(p1, plotting_x, pdf.(fitted_ln, plotting_x), 
+    label = "Log-Normal (RI = $(round(RI, digits=3)))", 
+    color = :darkorange,          # Contrasting complementary color
+    linewidth = 2.5
+)
 
-p3 = plot(isi_vec, xlabel="Index", ylabel="ISI (ms)", title="ISI timeseries")
-outname3 = joinpath(output_dir, "ISI_TIMESERIES.pdf")
-savefig(p3, outname3)
+outname1 = joinpath(output_dir, "Total_ISIs.pdf")
+savefig(p1, outname1)
 
-### Poincaré Plot ###
+## ISI timeseries
+p2 = plot(isi_vec, 
+    xlabel = "Index", 
+    ylabel = "ISI (ms)", 
+    title = "ISI Timeseries",
+    label = false,                # No legend needed for a single line
+    color = :gray30,              # Softer than pure black
+    linewidth = 1.0,
+    linealpha = 0.7               # Transparency helps reveal data density
+    )
+    
+outname2 = joinpath(output_dir, "ISI_TIMESERIES.pdf")
+savefig(p2, outname2)
+    
+## Poincaré plot
 
 xs = isi_vec[1:end-1]
 ys = isi_vec[2:end]
@@ -204,20 +261,51 @@ println("SD2 (Long-term drift):   ", round(sd2, digits=2))
 println("Ratio (SD2/SD1):         ", round(sd2/sd1, digits=2))
 println("Log SD:                  ", round(log_σ, digits=3))
 
-poinc_plot = scatter(xs, ys, 
-label="Intervals", 
-alpha=0.6, 
-markerstrokewidth=0,
-color=:blue,
-aspect_ratio=:equal, # Important to see true shape
-title="Poincaré Plot (Return Map)",
-xlabel="Interval t (ms)",
-ylabel="Interval t+1 (ms)"
+# Find absolute min/max to ensure perfectly square axes for the identity line
+ax_min = min(minimum(xs), minimum(ys)) * 0.95
+ax_max = max(maximum(xs), maximum(ys)) * 1.05
+
+p3 = scatter(xs, ys, 
+    label = "Intervals", 
+    alpha = 0.5, 
+    markersize = 2.5,             # Reduced marker size for cleaner overlap
+    markerstrokewidth = 0,
+    color = :steelblue,
+    aspect_ratio = :equal, 
+    xlims = (ax_min, ax_max),     # Lock axes to be perfectly identical
+    ylims = (ax_min, ax_max),
+    title = "Poincaré Plot (Return Map)",
+    xlabel = "Interval t (ms)",
+    ylabel = "Interval t+1 (ms)",
+    legend = :topleft             # Move legend away from the identity line
 )
 
-# Add Line of Identity (Perfect Rhythm Line)
-plot!([minimum(isi_vec), maximum(isi_vec)], [minimum(isi_vec), maximum(isi_vec)], 
-label="Line of Identity (y=x)", color=:red, linestyle=:dash)
+# Add Line of Identity
+plot!(p3, [ax_min, ax_max], [ax_min, ax_max], 
+    label = "Line of Identity (y=x)", 
+    color = :firebrick,           # Distinct dark red
+    linestyle = :dash,
+    linewidth = 1.5
+)
 
 poinc_outname = joinpath(output_dir, "POINCARE.pdf")
-savefig(poinc_plot,poinc_outname)
+savefig(p3, poinc_outname)
+
+
+# --- 1. Save the primary data ---
+df_data = DataFrame(ISI = isi_vec)
+CSV.write(joinpath(output_dir, "ISI_Timeseries_Data.csv"), df_data)
+
+# --- 2. Save the metrics ---
+# Pack all your single-value variables into a 1-row DataFrame
+df_metrics = DataFrame(
+    TimeLength = timelength,
+    LogPeak = log_peak,
+    LogSigma = log_σ,
+    RI = RI,
+    SD1 = sd1,
+    SD2 = sd2
+)
+CSV.write(joinpath(output_dir, "ISI_Metrics.csv"), df_metrics)
+
+println("Saved ISI data and metrics successfully!")
