@@ -7,20 +7,22 @@ using DataFrames
 using GLM
 using Statistics
 using Plots
+using Plots.Measures
 using Base.Threads
 
 # Set default plotting visuals
+
 default(
-    fontfamily = "Helvetica",    # Nice font
+    fontfamily = "Computer Modern",    # Nice font, renders a minus sign
     titlefontsize = 24,
-    guidefontsize = 22,          
-    tickfontsize = 20,
+    guidefontsize = 18,          
+    tickfontsize = 10,
     legendfontsize = 18,
     grid = false,                # Removes visual clutter for smaller plots
     framestyle = :box,           # Professional enclosed bounding box
-    dpi = 300                    # High resolution for PDF export
+    dpi = 300,                   # High resolution for PDF export
+    margin = 8Plots.mm           # Fixing the label cropping...
 )
-
 
 # Load CSV
 # Set input and output folders
@@ -47,10 +49,11 @@ function calculate_walker_psd(input_dir, output_dir)
     # This guarantees frequency bins align perfectly across all files
     df_first = CSV.read(csv_files[1], DataFrame)
     N_points = length(df_first.value1)
-    n_window = div(2 * N_points, 5)
+    n_window = div(2 * N_points, 3)
 
     # Initialize variables to hold sums
     W_X_sum = nothing
+    W_Y_sum = nothing
     W_V_sum = nothing
     freqs_out = nothing
     freqs_v_out = nothing
@@ -69,27 +72,30 @@ function calculate_walker_psd(input_dir, output_dir)
         v = sqrt.(vx.^2 .+ vy.^2)
 
         # Compute periodograms
-        pgram_x  = welch_pgram(x,  n_window; fs=fs, onesided=true, window=hanning)
-        pgram_vx = welch_pgram(vx, n_window; fs=fs, onesided=true, window=hanning)
+        pgram_x = welch_pgram(x, n_window; fs=fs, onesided=true, window=hanning)
+        pgram_y = welch_pgram(y, n_window; fs=fs, onesided=true, window=hanning)
         pgram_v = welch_pgram(v, n_window; fs=fs, onesided=true, window=hanning)
 
         if i == 1
             # First iteration: initialize the accumulators
             freqs_out = freq(pgram_x)
-            freqs_v_out = freq(pgram_vx)
+            freqs_v_out = freq(pgram_v)
             
             W_X_sum = power(pgram_x)
+            W_Y_sum = power(pgram_y)
             # Total Power is the sum of X and Y powers
             W_V_sum = power(pgram_v)
         else
             # Subsequent iterations: add to accumulators
             W_X_sum .+= power(pgram_x)
+            W_Y_sum .+= power(pgram_y)
             W_V_sum .+= power(pgram_v)
         end
     end
 
     # Calculate the ensemble average
     W_X_avg = W_X_sum ./ tot
+    W_Y_avg = W_Y_sum ./ tot
     W_V_avg = W_V_sum ./ tot
 
     # Save to CSV
@@ -99,7 +105,8 @@ function calculate_walker_psd(input_dir, output_dir)
     # might differ slightly in length. Better to save them safely.
     CSV.write(csv_outpath, DataFrame(
         Freqs_X = freqs_out, 
-        Welch_X = W_X_avg
+        Welch_X = W_X_avg,
+        Welch_Y = W_Y_avg
     ))
 
     println("Saved X Welch Periodograms to $csv_outpath")
@@ -116,28 +123,36 @@ function calculate_walker_psd(input_dir, output_dir)
     println("Saved V Welch Periodograms to $csv_outpath")
 
     # --- LINEAR PLOT ---
-    plot_x_lin = plot(
+    plot_pos_lin = plot(
         freqs_out, W_X_avg,
-        label = "Position PSD (Linear)", 
-        linewidth = 2, 
+        label = "X-Position PSD", 
+        linewidth = 4, 
         color = :steelblue,
         xlabel = "Frequency (Hz)",
         ylabel = "Power",
         xlims = (0, 10) # Capped at Nyquist, starts at 0
     )
-    savefig(plot_x_lin, joinpath(output_dir, "Welch_x_Linear.pdf"))
+    plot!(freqs_out, W_Y_avg,
+        label = "Y-Position PSD",
+        linewidth = 4,
+        color = :darkorange,
+        xlims = (0, 10)
+    )
+
+    savefig(plot_pos_lin, joinpath(output_dir, "Welch_x_Linear.pdf"))
 
 
     # --- LOGARITHMIC PLOT ---
     # We use [2:end] to drop the 0.0 Hz DC component and avoid the log(0) warning
     freqs_log = freqs_out[2:end]
     psd_x_log = W_X_avg[2:end]
+    psd_y_log = W_Y_avg[2:end]
 
-    plot_x_log = plot(
+    plot_pos_log = plot(
         freqs_log, psd_x_log,
-        label = "Position PSD (Log-Log)", 
-        linewidth = 2, 
-        color = :darkorange,
+        label = "X-Position PSD",
+        linewidth = 4, 
+        color = :steelblue,
         xscale = :log10, 
         yscale = :log10,
         xlabel = "Frequency (Hz)",
@@ -145,12 +160,19 @@ function calculate_walker_psd(input_dir, output_dir)
         # Start xlims slightly above 0, e.g., your lowest non-zero frequency
         xlims = (minimum(freqs_log), 20000) 
     )
-    savefig(plot_x_log, joinpath(output_dir, "Welch_x_Log.pdf"))
+
+    plot!(
+        freqs_log, psd_y_log,
+        label = "Y-Position PSD",
+        linewidth = 4,
+        color = :darkorange
+    )
+    savefig(plot_pos_log, joinpath(output_dir, "Welch_x_Log.pdf"))
 
     println("Successfully generated Linear and Logarithmic plots!")
 
     # --- LINEAR PLOT ---
-    plot_x_lin = plot(
+    plot_v_lin = plot(
         freqs_v_out, W_V_avg,
         label = "Velocity PSD (Linear)", 
         linewidth = 2, 
@@ -159,15 +181,13 @@ function calculate_walker_psd(input_dir, output_dir)
         ylabel = "Power",
         xlims = (0, 10) # Capped at Nyquist, starts at 0
     )
-    savefig(plot_x_lin, joinpath(output_dir, "Welch_v_Linear.pdf"))
+    savefig(plot_v_lin, joinpath(output_dir, "Welch_v_Linear.pdf"))
 
-
-    # --- LOGARITHMIC PLOT ---
-    # We use [2:end] to drop the 0.0 Hz DC component and avoid the log(0) warning
+    # We use [2:end] to drop the 0 Hz DC component and avoid the log(0) warning
     freqs_v_log = freqs_v_out[2:end]
     psd_v_log = W_V_avg[2:end]
 
-    plot_x_log = plot(
+    plot_v_log = plot(
         freqs_v_log, psd_v_log,
         label = "Velocity PSD (Log-Log)", 
         linewidth = 2, 
@@ -179,7 +199,7 @@ function calculate_walker_psd(input_dir, output_dir)
         # Start xlims slightly above 0, e.g., your lowest non-zero frequency
         xlims = (minimum(freqs_log), 20000) 
     )
-    savefig(plot_x_log, joinpath(output_dir, "Welch_v_Log.pdf"))
+    savefig(plot_v_log, joinpath(output_dir, "Welch_v_Log.pdf"))
 
     println("Successfully generated Linear and Logarithmic plots!")
 end
