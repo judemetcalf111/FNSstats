@@ -18,7 +18,7 @@ using Distributions
 
 # Set input and output folders
 input_dir  = "/Users/chardiol/Desktop/Theory of Brain/Julian_Plotting/data"
-output_dir  = "/Users/chardiol/Desktop/Theory of Brain/Julian_Plotting/ISI_DETECT"
+output_dir  = "/Users/chardiol/Desktop/Theory of Brain/Julian_Plotting/ISI_SG"
 
 # Make sure output folder exists
 isdir(output_dir) || mkdir(output_dir)
@@ -28,26 +28,25 @@ csv_files = filter(f -> endswith(f, ".csv"), readdir(input_dir; join=true))
 
 FigNumber = 1
 
-function get_sg_velocity(x, y, dt)
-    # 1. Parameters
-    # window_size: Must be ODD. 
-    # For saccades (20-50ms), a window of 21 (21ms) to 41 (41ms) is standard.
-    # If window is too small -> too much noise. If too large -> misses start of saccade.
-    window_size = 1001
+function get_sg_velocity(x, y, window_size, dt)
+
+    # Ensure odd:
+    if window_size % 2 == 0
+        window_size -= 1
+    end
     
     # order: The polynomial order. 
     # 2 (quadratic) or 3 (cubic) is standard. 
     # 3 is better at keeping sharp peaks, 2 is smoother.
     poly_order = 2
     
-    # 2. Apply Filter
     # deriv=1 calculates velocity directly.
     # rate=1/dt automatically scales the output to units/second.
     # The function returns a struct, the data is in the .y field
     sg_x = savitzky_golay(x, window_size, poly_order, deriv=1, rate=1/dt)
     sg_y = savitzky_golay(y, window_size, poly_order, deriv=1, rate=1/dt)
     
-    # 3. Combine into velocity magnitude
+    # Combine into velocity magnitude
     # We access the .y field to get the vector data
     vx = sg_x.y
     vy = sg_y.y
@@ -56,36 +55,45 @@ function get_sg_velocity(x, y, dt)
     return v
 end
 
-function calculate_isi(x, y; timeout_smoother=0.007, timeout=0.150, λ=6.0, dt=0.001, min_dur_steps=5)
+function calculate_isi(x, y; timeout_smoother=0.007, timeout=0.150, λ=6.0, ratio=0.1, dt=0.001, min_dur_steps=5)
     timeout_steps = Int(ceil(timeout/dt))
     timeout_smoother_steps = Int(ceil(timeout_smoother/dt))
     
-
-    v = get_sg_velocity(x, y, 0.001)
+    v = get_sg_velocity(x, y, timeout_smoother_steps, 0.001)
 
     # Threshold: λ=6 is standard for Engbert-Kliegl. 
     # If your data is very clean, you can lower this to 4 or 5.
     msd = median(abs.(v .- median(v))) / 0.6745
-    threshold = λ * msd
-    is_saccade = v .> threshold
+    threshold_on = λ * msd
+
+    λ_off = ratio * λ
+    threshold_off = λ_off * msd
 
     starts_timed = Int[]
     last_start = -timeout_steps 
     
     i = 1
-    while i < length(is_saccade)
-        if is_saccade[i]
-            j = i
-            while j <= length(is_saccade) && is_saccade[j]
+    n = length(v)
+    
+    while i <= n
+        # 1. Wait for velocity to spike above the high onset threshold
+        if v[i] > threshold_on
+            j = i + 1
+            
+            # 2. Keep moving forward until the particle is "effectively stationary"
+            while j <= n && v[j] >= threshold_off
                 j += 1
             end
+            
             event_duration = j - i
             
-            # Check duration and Refractory period
+            # 3. Check duration and Refractory period
             if event_duration >= min_dur_steps && (i - last_start) > timeout_steps
                 push!(starts_timed, i)
                 last_start = i
             end
+            
+            # 4. Advance our search index to the end of the stationary tail
             i = j
         else
             i += 1
@@ -107,16 +115,17 @@ for file in csv_files
     # timeout_smoother: 0.005 (5ms) instead of 0.2 (200ms)
     # timeout: 0.2 (200ms refractory) instead of 10 (10 seconds)
     (sac_starts, isi) = calculate_isi(x, y; 
-        timeout_smoother=0.1, 
+        timeout_smoother=30, 
         timeout=0.2, 
-        λ=12.0, 
+        ratio=0.1,
+        λ=6.0, 
         dt=dt, 
-        min_dur_steps=100
+        min_dur_steps=500
     )
 
     if length(isi) > 5 # Only plot if we have decent statistics
         # timelength over which we plot:
-        timelength = 25000.
+        timelength = 50000.
         # Precomputing the log normal fit
         lISI = log.(isi)
         log_σ = std(lISI)
@@ -124,6 +133,8 @@ for file in csv_files
         plotting_x = range(0,timelength)
         fitted_ln = LogNormal(log_peak,log_σ)
 
+        println("WE GET A LOG SD OF:        ", round(log_σ, digits=3))
+        
         p = histogram(isi,
                     bins=range(0, timelength, length=40),
                     normalize=:pdf,
@@ -158,7 +169,7 @@ for file in csv_files
         plot!(sac_starts, x[sac_starts], seriestype=:scatter, 
               markersize=3, color=:red, label="Detected Saccades")
         
-        plot!(xlims=(10000, 600000), ylims=(-10,10), title="Saccade Detection Trace")
+        plot!(xlims=(100000, 200000), ylims=(-15,15), title="Saccade Detection Trace")
         
         outname4 = joinpath(output_dir, splitext(basename(file))[1] * "-SACCADES.pdf")
         savefig(p4, outname4)
