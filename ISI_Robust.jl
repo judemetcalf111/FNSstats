@@ -84,21 +84,18 @@ for file in csv_files
     y = df.value2
     dt = 0.001
 
-    # 3. CRITICAL PARAMETER FIX:
-    # timeout_smoother: 0.005 (5ms) instead of 0.2 (200ms)
-    # timeout: 0.2 (200ms refractory) instead of 10 (10 seconds)
     (sac_starts, isi) = calculate_isi(x, y; 
-        timeout_smoother=1., 
-        timeout=5, 
-        λ=6.0, 
+        timeout_smoother=20,
+        timeout=0.3,
+        λ=3, 
         dt=dt, 
-        min_dur_steps=30
+        min_dur_steps=100
     )
 
     if length(isi) > 5 # Only plot if we have decent statistics
         # timelength over which we plot:
         timelength = 25000.
-        # Precomputing the log normal fit
+        # Lognormal fit
         lISI = log.(isi)
         log_σ = std(lISI)
         log_peak = median(lISI)
@@ -143,6 +140,41 @@ for file in csv_files
         
         outname4 = joinpath(output_dir, splitext(basename(file))[1] * "-SACCADES.pdf")
         savefig(p4, outname4)
+
+        ### Poincaré Plot ###
+
+        xs = isi[1:end-1]
+        ys = isi[2:end]
+
+        diff_vec = ys .- xs       # Perpendicular changes
+        sum_vec = ys .+ xs        # Longitudinal changes
+
+        sd1 = std(diff_vec) / sqrt(2)
+        sd2 = std(sum_vec) / sqrt(2)
+
+        println("Rhythm Stability Metrics:")
+        println("SD1 (Short-term jitter): ", round(sd1, digits=2))
+        println("SD2 (Long-term drift):   ", round(sd2, digits=2))
+        println("Ratio (SD2/SD1):         ", round(sd2/sd1, digits=2))
+        println("Log SD:                  ", round(log_σ, digits=3))
+
+        poinc_plot = scatter(xs, ys, 
+            label="Intervals", 
+            alpha=0.6, 
+            markerstrokewidth=0,
+            color=:blue,
+            aspect_ratio=:equal, # Important to see true shape
+            title="Poincaré Plot (Return Map)",
+            xlabel="Interval t (ms)",
+            ylabel="Interval t+1 (ms)"
+        )
+
+        # Add Line of Identity (Perfect Rhythm Line)
+        plot!([minimum(isi), maximum(isi)], [minimum(isi), maximum(isi)], 
+            label="Line of Identity (y=x)", color=:red, linestyle=:dash)
+
+        poinc_outname = joinpath(output_dir, splitext(basename(file))[1] * "-POINCARE.pdf")
+        savefig(poinc_plot,poinc_outname)
     end
     
     println("Processed $FigNumber: $(basename(file))")

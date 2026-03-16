@@ -1,7 +1,10 @@
 .DS_Store
+
 /data
 /ISI_*
 /Welch
 /SMSD
 /MAD
 /FFTS
+/ACFs
+/StepDistributions
