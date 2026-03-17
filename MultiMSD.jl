@@ -11,8 +11,6 @@ using Plots
 using Base.Threads
 using FFTW
 
-# Load CSV
-
 # Set input and output folders
 input_dir  = "/Users/chardiol/Desktop/Theory of Brain/Julian_Plotting/data"
 output_dir = "/Users/chardiol/Desktop/Theory of Brain/Julian_Plotting/MSD_Parallel"
@@ -130,52 +128,50 @@ function calculate_filtered_msd(input_dir, output_dir; K_t::Float64 = 1.5, dt::F
     
     println("Saved rapid MSD results to $csv_outpath")
     
-    # Update DataFrame Logic
+    # --- UPDATE PLOT LOGIC ---
     powerlaw_n = 100
     df = DataFrame(X = log.(lag_times[2:powerlaw_n]), Y = log.(final_msd_total[2:powerlaw_n]))
-    
+
     model = lm(@formula(Y ~ X), df)
     Coeffs = GLM.coef(model)
     
     plot_msd_total = plot(lag_times[2:end] * 1000, final_msd_total[2:end],
-    # label = "Squared MAD",       # Renamed from Means
-    linewidth = 8,
-    linestyle = :solid,
-    color = :steelblue,
-    xscale = :log10,
-    yscale = :log10,
-    grid = true,
-    size = (800, 600),           # Increases the base resolution canvas
-    dpi = 1200,                  # High resolution for crisp lines and text
-    guidefontsize = 30,          # Increases axis label font size (xlabel, ylabel)
-    tickfontsize = 30,           # Increases axis number/tick font size
-    legend = false,
-    framestyle = :box,           # Adds a clean border around the entire plot
-    margin = 5Plots.mm           # Prevents larger labels from being cut off
+        linewidth = 8,
+        linestyle = :solid,
+        color = :steelblue,
+        xscale = :log10,
+        yscale = :log10,
+        grid = true,
+        size = (800, 600),           
+        dpi = 1200,                  
+        guidefontsize = 30,          
+        tickfontsize = 30,           
+        legend = false,
+        framestyle = :box,           
+        margin = 5Plots.mm           
     )
     
+    # Trendline Plot (Start at index 2 to avoid log(0), and scale X by 1000)
     plot!(
-        lag_times[1:powerlaw_n],
-        (lag_times[1:powerlaw_n].^Coeffs[2]) .* (exp(Coeffs[1])), # slightly cleaner exp() syntax
-        # label = "Trendline",
+        lag_times[2:powerlaw_n] * 1000,
+        (lag_times[2:powerlaw_n].^Coeffs[2]) .* (exp(Coeffs[1])), 
         linewidth = 8,
         linestyle = :dash,
         legend = false,
-        color = :Black
+        color = :black
     )
     
-    # Update axis labels for MAD
-    plot!(xlabel = "Time", ylabel = "MSD ⟨r²⟩", legend = false)
+    plot!(xlabel = "Time (ms)", ylabel = "MSD <r^2>", legend = false)
     
     endpoint = 0.02
-    
-    tpos = endpoint                 # choose a spot
-    ypos = (endpoint.^Coeffs[2]) .* (ℯ.^Coeffs[1]) .* (10^(-1))   # y-value to match scale
+    tpos = endpoint * 1000 # Matched to the * 1000 scale
+    ypos = (endpoint.^Coeffs[2]) .* (exp(Coeffs[1])) .* (10^(-1))
     eqn_string = "t^$(round(Coeffs[2], digits=4))"
     
-    annotate!((tpos, ypos, text(eqn_string, :Black, 30, :left)))
+    annotate!((tpos, ypos, text(eqn_string, :black, 30, :left)))
 
     savefig(plot_msd_total, joinpath(output_dir, "MSD_Final.pdf"))
+    println("Saved rendered plot to MSD_Final.pdf")
 end
 
-calculate_filtered_msd(input_dir, output_dir; K_t=3., dt=0.001*0.023, cutoff_hz=50.)
+calculate_filtered_msd(input_dir, output_dir; K_t=3., dt=0.001*0.023, cutoff_hz=5000.)
