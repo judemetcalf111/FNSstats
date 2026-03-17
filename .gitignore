@@ -4,7 +4,8 @@
 /ISI_*
 /Welch
 /SMSD
-/MAD
+/MAD*
+/MSD*
 /FFTS
 /ACFs
 /StepDistributions
