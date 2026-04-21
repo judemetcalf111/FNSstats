@@ -25,9 +25,18 @@ csv_files = filter(f -> endswith(f, ".csv"), readdir(input_dir; join=true))
 
 FigNumber = 1
 
-function gaussian_smooth(vec, σ)
-    return imfilter(vec, Kernel.gaussian((σ,)))
-end
+default(
+    fontfamily = "Computer Modern",    # Nice font, renders a minus sign
+    titlefontsize = 24,
+    guidefontsize = 18,          
+    tickfontsize = 20,
+    legendfontsize = 16,
+    grid = false,                # Removes visual clutter for smaller plots
+    framestyle = :box,           # Professional enclosed bounding box
+    dpi = 300,                   # High resolution for PDF export
+    margin = 8Plots.mm,          # Fixing the label cropping...
+    legend = :topright,
+)
 
 function get_sg_velocity(x, y, window_size, dt)
 
@@ -105,7 +114,7 @@ function calculate_isi(x, y, msd; timeout_smoother=0.007, timeout=0.150, λ=6.0,
     return (starts_timed, isi) 
 end
 
-isi_vec = []
+isi_vec = Float64[]
 
 ### loop through csv files in /datadir
 
@@ -127,48 +136,27 @@ for file in csv_files
     y = df.value2
     dt = 0.001
 
-    # 3. CRITICAL PARAMETER FIX:
-    # timeout_smoother: 0.005 (5ms) instead of 0.2 (200ms)
-    # timeout: 0.2 (200ms refractory) instead of 10 (10 seconds)
     (sac_starts, isi) = calculate_isi(x, y, μ; 
-        timeout_smoother=6, 
+        timeout_smoother=4, 
         timeout=0.05,
         ratio=0.1,
-        λ=7,
+        λ=3,
         dt=dt, 
-        min_dur_steps=2400
+        min_dur_steps=1000
     )
-
-    # (sac_starts, isi) = calculate_isi(x, y, μ; 
-    #     timeout_smoother=5.5, 
-    #     timeout=0.2, 
-    #     ratio=0.1,
-    #     λ=8,
-    #     dt=dt, 
-    #     min_dur_steps=2400
-    # )
 
     append!(isi_vec,isi)
 
     if length(isi) > 5 # Only plot if we have decent statistics
-        # lags = 0:length(isi)-1
-        # acf_values = autocor(isi, lags)
-        
-        # p2 = plot(lags, acf_values, xlims=(0,40), ylims=(-0.1,0.2), xlabel="Lag", ylabel="Autocorrelation", title="Autocorrelation of ISIs")
-        # outname2 = joinpath(output_dir, splitext(basename(file))[1] * "-ISI_ACF.pdf")
-        
-        # shuffled_acf = autocor(shuffle(isi), lags)
-        # plot!(lags, shuffled_acf, label="Shuffled ISIs", color=:red, linestyle=:dash)
-        # savefig(p2, outname2)
-        
-        p4 = plot(x, label="X Position", color=:blue, alpha=0.6)
-        plot!(y, label="Y Position", color=:green, alpha=0.6)
+
+        p4 = plot(0.023.*(1:length(x)),x, label="X Position", color=:blue, alpha=0.6, legendfontsize = 12)
+        plot!(0.023.*(1:length(y)),y, label="Y Position", color=:green, alpha=0.6)
         
         # Add scatter points on X trace to mark starts
-        plot!(sac_starts, x[sac_starts], seriestype=:scatter, 
-        markersize=3, color=:red, label="Detected Saccades")
+        plot!(sac_starts*0.023, x[sac_starts], seriestype=:scatter, 
+        markersize=10, color=:red, label="Detected Saccades")
         
-        plot!(xlims=(10000, 300000), title="Saccade Detection Trace")
+        plot!(xlims=(200000*0.023, 300000*0.023), ylims=(-15,30), title="Saccade Detection Trace")
         
         outname4 = joinpath(output_dir, splitext(basename(file))[1] * "-SACCADES.pdf")
         savefig(p4, outname4)
@@ -183,52 +171,87 @@ end
 isi_vec .*= 0.023
 
 N = length(isi_vec)
+timelength = 1000
+plotting_x = range(0,timelength)
 
 # timelength over which we plot:
-timelength = 60000. * 0.023
-# Precomputing the log normal fit
-lISI = log.(isi_vec)
-log_σ = std(lISI)
-RI = 1 / sqrt(exp(log_σ^2) - 1)
-log_peak = median(lISI)
-plotting_x = range(0,timelength)
-fitted_ln = LogNormal(log_peak,log_σ)
+# # Precomputing the log normal fit
+# lISI = log.(isi_vec)
+# log_σ = std(lISI)
+# RI = 1 / sqrt(exp(log_σ^2) - 1)
+# log_peak = median(lISI)
+# fitted_ln = LogNormal(log_peak,log_σ)
 
-default(
-    fontfamily = "Computer Modern",    # Nice font, renders a minus sign
-    titlefontsize = 24,
-    guidefontsize = 18,          
-    tickfontsize = 20,
-    legendfontsize = 16,
-    grid = false,                # Removes visual clutter for smaller plots
-    framestyle = :box,           # Professional enclosed bounding box
-    dpi = 300,                   # High resolution for PDF export
-    margin = 8Plots.mm,          # Fixing the label cropping...
-    legend = :topright
-)
+CV_2 = Float64[]
+for i in firstindex(isi_vec):lastindex(isi_vec)-1
+    cv2value = 2 * abs(isi_vec[i+1]-isi_vec[i]) / (isi_vec[i+1]-isi_vec[i])
+    push!(CV_2, cv2value)
+end
 
-### Histogram with Log-normal fit
+RCRI = 1/(1 + mean(CV_2))
+
+# Tenth order Gamma model:
+order = 10.
+scale = mean(isi_vec) / order
+
+Gamma_fit = Gamma(order, scale)
+
+general_Gamma_fit = fit(Normal, isi_vec)
+
+### Histogram with Gamma fits
 p1 = histogram(isi_vec,
-    bins = range(0, timelength, length=120),
+    bins = range(0, timelength, length=60),
     normalize = :pdf,
     xlabel = "Inter-Saccadic Interval (ms)",
     ylabel = "Probability Density",
     xlims = (0, timelength),
-    label = "Simulated ISI Data", # Fixed: Changed 'legend' to 'label'
-    color = :steelblue,           # Professional muted blue
-    linecolor = :white,           # White borders separate the bins clearly
+    label = "ISIs (RCRI=$(round(RCRI, digits=3)))", 
+    color = :steelblue,           
+    linecolor = :white,           
     linewidth = 0.5,
     fillalpha = 0.7
 )
 
-plot!(p1, plotting_x, pdf.(fitted_ln, plotting_x), 
-    label = "Log-Normal (RI = $(round(RI, digits=3)))", 
-    color = :darkorange,          # Contrasting complementary color
-    linewidth = 2.5
-)
+# # Overlay the 10th-order Gamma fit
+# plot!(p1, plotting_x, pdf.(Gamma_fit, plotting_x), 
+#     label = "Gamma(10)",
+#     color = :darkred,          # Deep red for the fixed order model
+#     linewidth = 2.5
+# )
+
+# # Overlay the General MLE Gamma fit
+# plot!(p1, plotting_x, pdf.(general_Gamma_fit, plotting_x), 
+#     label = "General MLE Gamma", 
+#     color = :darkorange,       # Orange for the general model
+#     linewidth = 2.5,
+#     linestyle = :dash          # Dashed line to easily distinguish the two fits
+# )
 
 outname1 = joinpath(output_dir, "Total_ISIs.pdf")
 savefig(p1, outname1)
+
+# ### Histogram with Log-normal fit
+# p1 = histogram(isi_vec,
+#     bins = range(0, timelength, length=120),
+#     normalize = :pdf,
+#     xlabel = "Inter-Saccadic Interval (ms)",
+#     ylabel = "Probability Density",
+#     xlims = (0, timelength),
+#     label = "Simulated ISI Data", # Fixed: Changed 'legend' to 'label'
+#     color = :steelblue,           # Professional muted blue
+#     linecolor = :white,           # White borders separate the bins clearly
+#     linewidth = 0.5,
+#     fillalpha = 0.7
+# )
+
+# plot!(p1, plotting_x, pdf.(fitted_ln, plotting_x), 
+#     label = "Log-Normal (RI = $(round(RI, digits=3)))", 
+#     color = :darkorange,          # Contrasting complementary color
+#     linewidth = 2.5
+# )
+
+# outname1 = joinpath(output_dir, "Total_ISIs.pdf")
+# savefig(p1, outname1)
 
 ## ISI timeseries
 p2 = plot(isi_vec, 
@@ -255,13 +278,13 @@ sum_vec = ys .+ xs        # Longitudinal changes
 sd1 = std(diff_vec) / sqrt(2)
 sd2 = std(sum_vec) / sqrt(2)
 
-println("Rhythm Stability Metrics:")
-println("SD1 (Short-term jitter): ", round(sd1, digits=2))
-println("SD2 (Long-term drift):   ", round(sd2, digits=2))
-println("Ratio (SD2/SD1):         ", round(sd2/sd1, digits=2))
-println("Log SD:                  ", round(log_σ, digits=3))
+# println("Rhythm Stability Metrics:")
+# println("SD1 (Short-term jitter): ", round(sd1, digits=2))
+# println("SD2 (Long-term drift):   ", round(sd2, digits=2))
+# println("Ratio (SD2/SD1):         ", round(sd2/sd1, digits=2))
+# println("Log SD:                  ", round(log_σ, digits=3))
 
-# Find absolute min/max to ensure perfectly square axes for the identity line
+# # Find absolute min/max to ensure perfectly square axes for the identity line
 ax_min = min(minimum(xs), minimum(ys)) * 0.95
 ax_max = max(maximum(xs), maximum(ys)) * 1.05
 
@@ -291,21 +314,20 @@ plot!(p3, [ax_min, ax_max], [ax_min, ax_max],
 poinc_outname = joinpath(output_dir, "POINCARE.pdf")
 savefig(p3, poinc_outname)
 
-
 # --- 1. Save the primary data ---
 df_data = DataFrame(ISI = isi_vec)
 CSV.write(joinpath(output_dir, "ISI_Timeseries_Data.csv"), df_data)
 
 # --- 2. Save the metrics ---
-# Pack all your single-value variables into a 1-row DataFrame
-df_metrics = DataFrame(
-    TimeLength = timelength,
-    LogPeak = log_peak,
-    LogSigma = log_σ,
-    RI = RI,
-    SD1 = sd1,
-    SD2 = sd2
-)
-CSV.write(joinpath(output_dir, "ISI_Metrics.csv"), df_metrics)
+# # Pack all your single-value variables into a 1-row DataFrame
+# df_metrics = DataFrame(
+#     TimeLength = timelength,
+#     LogPeak = log_peak,
+#     LogSigma = log_σ,
+#     RI = RI,
+#     SD1 = sd1,
+#     SD2 = sd2
+# )
+# CSV.write(joinpath(output_dir, "ISI_Metrics.csv"), df_metrics)
 
 println("Saved ISI data and metrics successfully!")
