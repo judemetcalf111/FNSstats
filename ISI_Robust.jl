@@ -27,7 +27,7 @@ csv_files = filter(f -> endswith(f, ".csv"), readdir(input_dir; join=true))
 
 FigNumber = 1
 
-function calculate_isi(x, y; timeout_smoother=0.007, timeout=0.150, λ=8.0, dt=0.001, min_dur_steps=5)
+function calculate_isi(x, y; timeout_smoother=0.007, timeout=0.150, λ=8.0, dt=0.0001, min_dur_steps=5)
     timeout_steps = Int(ceil(timeout/dt))
     timeout_smoother_steps = Int(ceil(timeout_smoother/dt))
     
@@ -82,7 +82,7 @@ for file in csv_files
     df = CSV.read(file, DataFrame)
     x = df.value1
     y = df.value2
-    dt = 0.001
+    dt = 0.0001
 
     (sac_starts, isi) = calculate_isi(x, y; 
         timeout_smoother=20,

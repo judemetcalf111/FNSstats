@@ -56,7 +56,7 @@ for file in csv_files
     y = df.value2
 
     # 1. Define Sampling Frequency
-    dt = 0.001
+    dt = 0.0001
     sample_freq = 1/dt
 
     # 2. Define Response (Place 'fs' HERE)
@@ -88,7 +88,7 @@ for file in csv_files
     savefig(outname)
 
     n = 20000
-    t = 0.001 * collect(1:n)
+    t = 0.0001 * collect(1:n)
     xtest = x[1:end-n]
     m = length(xtest)
 

@@ -67,11 +67,11 @@ function find_med(x,y,timeout_smoother,dt)
     return msd 
 end
 
-function calculate_isi(x, y, msd; timeout_smoother=0.007, timeout=0.150, λ=6.0, ratio=0.1, dt=0.001, min_dur_steps=5)
+function calculate_isi(x, y, msd; timeout_smoother=0.007, timeout=0.150, λ=6.0, ratio=0.1, dt=0.0001, min_dur_steps=5)
     timeout_steps = Int(ceil(timeout/dt))
     timeout_smoother_steps = Int(ceil(timeout_smoother/dt))
     
-    v = get_sg_velocity(x, y, timeout_smoother_steps, 0.001)
+    v = get_sg_velocity(x, y, timeout_smoother_steps, 0.0001)
 
     # Threshold: λ=6 is standard for Engbert-Kliegl. 
     threshold_on = λ * msd
@@ -126,7 +126,7 @@ for file in csv_files
     df = CSV.read(file, DataFrame)
     x = df.value1
     y = df.value2
-    dt = 0.001
+    dt = 0.0001
     global μ += find_med(x,y,2,dt)/total_samples
 end
 
@@ -134,7 +134,7 @@ for file in csv_files
     df = CSV.read(file, DataFrame)
     x = df.value1
     y = df.value2
-    dt = 0.001
+    dt = 0.0001
 
     (sac_starts, isi) = calculate_isi(x, y, μ; 
         timeout_smoother=4, 

@@ -52,7 +52,7 @@ function compute_exact_mad(x::Vector{Float64}, max_lag::Int)
     return mad
 end
 
-function calculate_chunked_mad(input_dir, output_dir; K_t::Float64 = 1.5, dt::Float64 = 0.001)
+function calculate_chunked_mad(input_dir, output_dir; K_t::Float64 = 1.5, dt::Float64 = 0.0001)
     isdir(output_dir) || mkdir(output_dir)
 
     csv_files = filter(f -> endswith(f, ".csv"), readdir(input_dir; join=true))
@@ -168,4 +168,4 @@ function calculate_chunked_mad(input_dir, output_dir; K_t::Float64 = 1.5, dt::Fl
     println("Saved rendered plot to SMAD_Final.pdf")
 end
 
-calculate_chunked_mad(input_dir, output_dir; K_t=3., dt=0.001*0.023)
+calculate_chunked_mad(input_dir, output_dir; K_t=3., dt=0.0001*0.023)

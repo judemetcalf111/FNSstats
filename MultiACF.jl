@@ -32,7 +32,7 @@ function calculate_fast_chunked_acf(input_dir, output_dir; K_t::Float64 = 1.5, s
         return
     end
 
-    dt = 0.001
+    dt = 0.0001
     K = ceil(Int, K_t / (dt * scaling))
     
     println("Calculating chunked FFT ACF up to lag $K...")

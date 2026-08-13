@@ -54,7 +54,7 @@ for file in csv_files
     y = df.value2
 
     n = 15000
-    t = 0.001 * collect(1:n)
+    t = 0.0001 * collect(1:n)
     xtest = x[1:end-n]
     m = length(xtest)
 

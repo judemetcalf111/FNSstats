@@ -45,7 +45,7 @@ function process_kde(csv_files)
         df = CSV.read(file, DataFrame)
         x = df.value1
         y = df.value2
-        dt = 0.001
+        dt = 0.0001
 
         dx = diff(x)
         dy = diff(y)
